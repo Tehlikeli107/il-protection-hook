@@ -1,7 +1,7 @@
 {
   "name": "il-protection-hook",
   "version": "1.0.0",
-  "description": "Uniswap V4 Hook - First-ever Automated IL Protection for LPs",
+  "description": "Experimental Uniswap v4 dynamic-fee research hook for LP risk-management studies",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test"
