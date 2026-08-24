@@ -1,130 +1,128 @@
-# IL Protection Hook for Uniswap V4
+# Dynamic-Fee Research Hook for Uniswap v4
 
-**The first-ever Automated Impermanent Loss Protection Hook for Uniswap V4.**
+> **Research status:** experimental, unaudited Uniswap v4 dynamic-fee hook. It is **not** an insurance product, does not guarantee impermanent-loss compensation, and should not be treated as production-safe LP protection.
 
-Live on Arbitrum: [`0x5330fe57f714966545Ff6FfAE402118BBc619480`](https://arbiscan.io/address/0x5330fe57f714966545Ff6FfAE402118BBc619480)
+The hook explores a simple idea: raise the LP swap fee as the pool price moves farther from a stored reference price, with the goal of collecting more fee revenue during volatile periods.
 
-## Problem
+Historical versions of this repository called the project the **“first-ever automated impermanent-loss protection hook”** and described some parameter settings as **“fully compensating IL.”** Those claims are withdrawn.
 
-50-80% of Uniswap liquidity providers lose money due to Impermanent Loss (IL). When prices move, LPs lose value compared to simply holding. The more volatile the pair, the worse the loss.
+Dynamic fees for LP risk management are an explicit Uniswap v4 use case, and earlier/public work has explored volatility-based dynamic-fee hooks and impermanent-loss hedging/protection. Priority would require a dedicated prior-art analysis and cannot be inferred from this repository.
 
-## Solution
+## Experimental deployment
 
-Dynamic fees that automatically scale with impermanent loss:
+A historical experimental deployment is referenced at:
 
-- **Price stable**: Fee stays at base rate (0.3%) — competitive with standard pools
-- **Price diverges**: Fee increases proportionally to IL — LPs earn extra compensation
-- **Price crashes**: Fee spikes — LPs are protected precisely when they need it most
+`0x5330fe57f714966545Ff6FfAE402118BBc619480` on Arbitrum One.
 
-No external oracles. No hedging capital. No complexity for LPs. Just deposit and be protected.
+The presence of a deployed contract does **not** imply audit, economic safety, profitability, or correctness of the protection model. Do not deposit funds based solely on this README or the included simulation.
 
-## How It Works
+## Intended mechanism
 
-```
-IL Protection Formula:
-  dynamicFee = baseFee + IL_coefficient * divergence^2
+The source contract stores a reference `sqrtPriceX96` and, in `beforeSwap`, computes a divergence-like quantity from the current and reference values. It then maps that quantity to a fee override.
 
-Where:
-  divergence = |currentPrice / referencePrice - 1|
-  IL ~ divergence^2 / 4  (standard IL approximation)
+Conceptually:
 
-Example:
-  Price moves +10%  -> fee increases from 0.3% to 0.55%
-  Price moves +30%  -> fee increases from 0.3% to 2.55%
-  Price moves +50%  -> fee increases from 0.3% to 6.55%
+```text
+larger price divergence
+        -> larger fee parameter
+        -> more fee revenue per executed swap
 ```
 
-LPs earn higher fees exactly when IL hits hardest.
+This is best described as a **dynamic-fee experiment**, not as automatic IL reimbursement. The hook does not create an insurance reserve, hedge externally, or pay an explicit IL claim to LPs.
 
-## Simulation Results
+## Known methodology / implementation limitations
 
-Tested across 1,000 price paths per scenario, 90-day periods:
+These limitations are material and should be understood before interpreting any result.
 
-| Scenario | Standard LP (0.3%) | IL Protected LP | Improvement |
-|----------|-------------------|-----------------|-------------|
-| Low Volatility | -0.08% | **+0.36%** | +0.44% |
-| **High Volatility** | -1.85% | **+7.62%** | **+9.46%** |
-| Bull Market | +3.24% | **+5.04%** | +1.80% |
-| Bear Market | -5.27% | **-3.43%** | +1.84% |
-| **Crash + Recovery** | -3.11% | **+14.67%** | **+17.77%** |
+### 1. `sqrtPrice` is not the same as price
 
-IL Protected LPs outperform in **every scenario**.
+Uniswap represents pool price through `sqrtPriceX96`. The current contract compares ratios of `sqrtPriceX96` values and then labels the result as price divergence. A price ratio is the **square** of the corresponding sqrt-price ratio, so the current calculation is not a direct implementation of the README's historical price-divergence examples.
 
-## Hook Architecture
+### 2. IL and fee quantities use different numerical scales
 
-```
-afterInitialize()
-  -> Records reference sqrtPrice for IL tracking
+The contract computes an `ilBps`-named value and adds it directly to the v4 LP-fee integer. In Uniswap v4 fee units, `3000` represents 0.3%. A conventional basis-point quantity and the v4 fee integer are therefore not automatically interchangeable without an explicit conversion.
 
-beforeSwap()
-  -> Calculates price divergence from reference
-  -> Computes IL in basis points: IL = divergence^2 / 40000
-  -> Returns dynamic fee override: baseFee + IL * coefficient
-  -> Higher IL = higher fee = automatic LP compensation
+Because of this, `ilCoefficientBps = 10000` must **not** be interpreted as “100% IL compensation.” The economic meaning of the coefficient needs a corrected unit derivation and tests against the exact v4 fee semantics.
 
-afterAddLiquidity()
-  -> Maintains reference price stability
-```
+### 3. The included simulation double-counts fee revenue in its reported net return
 
-### Hooks Used
-- `afterInitialize` (bit 12)
-- `afterAddLiquidity` (bit 10)
-- `beforeSwap` (bit 7)
+`simulate.py` lets the AMM invariant `k` grow as fees are retained in the pool, so fee effects are already reflected in the simulated final pool value. It then adds `total_fees_earned` again when computing `net_return`.
 
-Address flags: `0x1480`
+That makes the historical simulation table an optimistic and currently invalid performance estimate. The previous statements that the dynamic version “outperforms in every scenario” or produces specific +9% / +17% improvements are withdrawn pending a repaired simulation.
 
-## Deployment
+### 4. The simulator is not a faithful Uniswap v4 concentrated-liquidity model
 
-**Live on Arbitrum One:**
-- Hook: [`0x5330fe57f714966545Ff6FfAE402118BBc619480`](https://arbiscan.io/address/0x5330fe57f714966545Ff6FfAE402118BBc619480)
-- PoolManager: `0x000000000004444c5dc75cB358380D2e3dE08A90`
-- Deploy TX: [`0xba71230e...`](https://arbiscan.io/tx/0xba71230e59a6425d54f5e75ba19d1a0382c20342c1d9f1a6fbefbe869c28977a)
-- Pool Init TX: [`0x06d9ec4a...`](https://arbiscan.io/tx/0x06d9ec4a224728c5bb2995384756682545c61a8fda0abdb4bf23e2aaf8c7a070)
+The simulation is a simplified constant-product / v2-style model with synthetic daily price paths. It does not model concentrated liquidity ranges, endogenous trade volume response to fees, routing, arbitrage competition, gas, MEV, liquidity migration, token-specific risks, or real v4 hook execution/accounting.
 
-## Configurable Parameters
+### 5. Higher fees can reduce volume
 
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `baseFee` | 3000 (0.3%) | 100-10000 | Base swap fee when IL is zero |
-| `ilCoefficientBps` | 10000 (100%) | 0-20000 | How aggressively fee scales with IL |
+Increasing the fee per trade does not guarantee greater total fee revenue. Swappers and routers can choose competing pools/routes, so a valid economic test must model the fee/volume relationship rather than assume the same arbitrage flow at any fee.
 
-**IL Coefficient Examples:**
-- 5000 (50%): Conservative — fee increases slowly with IL
-- 10000 (100%): Standard — fee fully compensates IL
-- 15000 (150%): Aggressive — overcompensates IL (higher LP returns, fewer trades)
+## What the repository currently demonstrates
 
-## Build & Test
+- a Solidity implementation of a per-swap fee override concept for Uniswap v4;
+- use of v4 hook callbacks and pool state to derive an adaptive fee;
+- an experimental Python simulator that can be repaired into a more rigorous research harness;
+- a concrete basis for studying whether a divergence/volatility-aware fee rule can improve LP outcomes under specified assumptions.
+
+## What is **not** established
+
+- first-ever priority;
+- guaranteed impermanent-loss protection;
+- full or partial IL compensation at any coefficient setting;
+- profitability or improved LP returns in live markets;
+- safety of the deployed contract;
+- audit status;
+- robustness against manipulation of the reference/fee mechanism;
+- superiority to other dynamic-fee, hedging, or insurance approaches.
+
+## Prior-art context
+
+Relevant public context includes:
+
+- Uniswap v4's official dynamic-fee design, which explicitly discusses raising fees during high volatility to improve LP risk management;
+- earlier dynamic-fee hook prototypes based on volatility/volume;
+- Uniswap governance discussions about hedging impermanent loss, including proposals predating this repository's current claims;
+- a 2026 BELTA Labs RFC describing an automated Uniswap v4 IL-hedging hook with dynamic fees plus external underwriting/hedging mechanisms.
+
+Accordingly, this repository uses **no novelty or priority claim**.
+
+## Research plan before any protection claim
+
+A credible next validation should:
+
+1. derive the fee formula in exact Uniswap v4 units;
+2. convert `sqrtPriceX96` to the intended price/divergence measure correctly;
+3. fix simulation fee accounting so revenue is counted once;
+4. implement concentrated-liquidity accounting;
+5. use real historical swap/price/volume data;
+6. model volume/routing response to higher fees;
+7. compare against fixed-fee and other adaptive-fee baselines on identical data;
+8. preserve raw paths, trades, fees, LP values, and environment metadata;
+9. add Solidity unit/fuzz/invariant tests;
+10. obtain an independent smart-contract security review before production use.
+
+## Build
 
 ```bash
 npm install
 npx hardhat compile
-python simulate.py  # Run IL protection simulation
 ```
 
-## Deploy Your Own
+The Python simulation can be run with:
 
 ```bash
-cp .env.example .env
-# Edit .env with your private key
-npx hardhat run scripts/deploy.js --network arbitrum
-npx hardhat run scripts/create_pool.js --network arbitrum
+python simulate.py
 ```
 
-## Why This Hasn't Been Done Before
-
-Previous IL protection attempts used:
-- External hedging via options (expensive, complex)
-- Insurance pools (capital-intensive)
-- Oracle-dependent mechanisms (centralization risk)
-
-Our approach uses **dynamic fees as built-in insurance** — no external dependencies, no capital lockup, no oracles. The pool's own price history is the only input.
+Its current output is for debugging/research only and must not be used as a return forecast.
 
 ## References
 
-- [Uniswap V4 Hooks Documentation](https://docs.uniswap.org/contracts/v4/concepts/hooks)
-- [IL Hedge Hook RFC (Uniswap Governance)](https://gov.uniswap.org/t/rfc-il-hedge-hook-automated-impermanent-loss-protection-for-uniswap-v4-lps/26059)
-- [Impermanent Loss Mathematics](https://pintail.medium.com/uniswap-a-good-deal-for-liquidity-providers-104c0b6816f2)
+- Uniswap v4 developer documentation: Dynamic Fees
+- Uniswap Governance: 2024 RFC on hedging impermanent loss
+- Uniswap Governance: 2026 BELTA Labs automated IL-protection RFC
 
-## License
+## License status
 
-MIT
+`contracts/ILProtectionHookV4.sol` contains an `SPDX-License-Identifier: MIT` declaration. A repository-level `LICENSE` file is not currently committed, so do not assume that every repository file is covered by a complete project-wide license grant.
